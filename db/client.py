@@ -1,6 +1,14 @@
-"""Singleton ChromaDB client and collection setup."""
+"""Singleton ChromaDB client and collection setup.
+
+Client mode is controlled by environment variables:
+  CHROMA_HOST  — if set, connects via HTTP to a ChromaDB server (Docker / cloud)
+  CHROMA_PORT  — port for the HTTP server (default: 8000)
+  CHROMA_PERSIST_PATH — local file path when NOT using HTTP mode (default: ./data/chroma)
+"""
 
 from __future__ import annotations
+
+import os
 
 import chromadb
 from chromadb import Collection
@@ -14,7 +22,12 @@ _collection: Collection | None = None
 def get_client(persist_path: str = "./data/chroma") -> chromadb.ClientAPI:
     global _client
     if _client is None:
-        _client = chromadb.PersistentClient(path=persist_path)
+        host = os.environ.get("CHROMA_HOST")
+        if host:
+            port = int(os.environ.get("CHROMA_PORT", "8000"))
+            _client = chromadb.HttpClient(host=host, port=port)
+        else:
+            _client = chromadb.PersistentClient(path=persist_path)
     return _client
 
 
