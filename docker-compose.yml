@@ -7,12 +7,6 @@ services:
     ports:
       - "8001:8000"   # expose on host for direct inspection if needed
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/heartbeat')"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
     # Advisory limits — tune for your host
     deploy:
       resources:
@@ -34,8 +28,7 @@ services:
     env_file:
       - .env          # ANTHROPIC_API_KEY and any overrides
     depends_on:
-      chroma:
-        condition: service_healthy
+      - chroma
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
