@@ -138,7 +138,7 @@ def ingest(
         total += count
         console.print(f"[green]✓[/green] {source}: {count} items upserted")
 
-    console.print(f"\n[bold]Total:[/bold] {total} items in database")
+    console.print(f"\n[bold]Upserted this run:[/bold] {total}  [bold]Total in DB:[/bold] {db.item_count()}")
 
 
 # ---------------------------------------------------------------------------
