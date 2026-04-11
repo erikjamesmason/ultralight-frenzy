@@ -97,7 +97,7 @@ class FilterResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Agentic query
+# Agentic query (single-turn)
 # ---------------------------------------------------------------------------
 
 class AgentQueryRequest(BaseModel):
@@ -106,6 +106,40 @@ class AgentQueryRequest(BaseModel):
 
 class AgentQueryResponse(BaseModel):
     response: str
+
+
+# ---------------------------------------------------------------------------
+# Chat — stateless (client-managed history)
+# ---------------------------------------------------------------------------
+
+class ChatRequest(BaseModel):
+    message: str
+    # Pass the `history` value from the previous response to continue the
+    # conversation. Omit (or send []) to start fresh.
+    history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ChatResponse(BaseModel):
+    response: str
+    # Return this opaque list as `history` in your next request.
+    history: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Chat — stateful (server-managed sessions)
+# ---------------------------------------------------------------------------
+
+class SessionCreateResponse(BaseModel):
+    session_id: str
+
+
+class SessionMessageRequest(BaseModel):
+    message: str
+
+
+class SessionMessageResponse(BaseModel):
+    response: str
+    session_id: str
 
 
 # ---------------------------------------------------------------------------

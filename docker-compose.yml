@@ -12,6 +12,9 @@ services:
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app        # live source mount — code changes apply on container restart,
+                      # no rebuild needed unless pyproject.toml changes
     environment:
       # Tells db/client.py to use HttpClient instead of PersistentClient
       CHROMA_HOST: chroma

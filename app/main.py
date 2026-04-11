@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.routers import gear, ingest, search
+from app.routers import chat, gear, ingest, search
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -35,6 +35,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(chat.router)
 app.include_router(gear.router)
 app.include_router(search.router)
 app.include_router(ingest.router)
