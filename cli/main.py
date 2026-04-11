@@ -43,6 +43,15 @@ def ingest(
         "-s",
         help="Scraper sources to run (lighterpack, rei, outdoorgearlab).",
     ),
+    lp_ids: Optional[list[str]] = typer.Option(
+        None,
+        "--lp-ids",
+        help=(
+            "LighterPack list IDs to scrape. Find the ID in any public share URL: "
+            "https://lighterpack.com/r/<ID>. "
+            "Example: --lp-ids abc123 --lp-ids def456"
+        ),
+    ),
 ):
     """Scrape gear data and upsert into the vector database."""
     from scrapers.lighterpack import LighterPackScraper
@@ -52,20 +61,27 @@ def ingest(
 
     _init_db()
 
-    scraper_map = {
-        "lighterpack": LighterPackScraper,
-        "rei": REIScraper,
-        "outdoorgearlab": OutdoorGearLabScraper,
-    }
-
     total = 0
     for source in sources:
-        cls = scraper_map.get(source.lower())
-        if not cls:
-            console.print(f"[red]Unknown source:[/red] {source}")
-            continue
+        source = source.lower()
         with console.status(f"Scraping [bold]{source}[/bold]…"):
-            items = asyncio.run(cls().scrape())
+            if source == "lighterpack":
+                if not lp_ids:
+                    console.print(
+                        "[yellow]lighterpack:[/yellow] no list IDs provided — "
+                        "pass them with [bold]--lp-ids <ID>[/bold]\n"
+                        "  Find the ID in a share URL: lighterpack.com/r/[bold]<ID>[/bold]"
+                    )
+                    continue
+                items = asyncio.run(LighterPackScraper(list_ids=lp_ids).scrape())
+            elif source == "rei":
+                items = asyncio.run(REIScraper().scrape())
+            elif source == "outdoorgearlab":
+                items = asyncio.run(OutdoorGearLabScraper().scrape())
+            else:
+                console.print(f"[red]Unknown source:[/red] {source}")
+                continue
+
         valid = [i.to_dict() for i in items if i.weight_g > 0]
         count = db.upsert_items(valid)
         total += count
