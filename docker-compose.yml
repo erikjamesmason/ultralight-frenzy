@@ -19,12 +19,13 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - .:/app        # live source mount — code changes apply on container restart,
-                      # no rebuild needed unless pyproject.toml changes
+      - .:/app              # live source mount — code changes apply on container restart
+      - gear_venv:/app/.venv  # named volume shadows host .venv; container keeps its own
     environment:
       # Tells db/client.py to use HttpClient instead of PersistentClient
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
+      UV_LINK_MODE: copy    # suppress hardlink warning when cache/venv are on different fs
     env_file:
       - .env          # ANTHROPIC_API_KEY and any overrides
     depends_on:
@@ -44,3 +45,4 @@ services:
 
 volumes:
   chroma_data:
+  gear_venv:    # persists the container's .venv across restarts
