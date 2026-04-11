@@ -6,6 +6,18 @@ services:
       - chroma_data:/chroma/chroma
     ports:
       - "8001:8000"   # expose on host for direct inspection if needed
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Advisory limits — tune for your host
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   # ── Gear API + CLI ────────────────────────────────────────────────────────
   gear:
@@ -22,7 +34,20 @@ services:
     env_file:
       - .env          # ANTHROPIC_API_KEY and any overrides
     depends_on:
-      - chroma
+      chroma:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Advisory limits — tune for your host
+    deploy:
+      resources:
+        limits:
+          memory: 2g
 
 volumes:
   chroma_data:

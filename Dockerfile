@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 # Install uv from the official distroless image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
@@ -11,6 +13,7 @@ COPY . .
 RUN uv sync --no-dev
 
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV CHROMA_PERSIST_PATH=/data/chroma
 
 # Pre-create the local data dir (used when running without a Chroma server)
