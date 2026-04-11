@@ -31,19 +31,15 @@ When answering queries:
 """
 
 
-async def run_query(user_message: str) -> str:
+async def _run_turn(
+    client: anthropic.AsyncAnthropic,
+    messages: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
     """
-    Run an agentic query against the gear database.
-    Returns the final text response from Claude.
+    Run one agentic turn (possibly multiple tool-call iterations) and return
+    (response_text, updated_messages). The caller owns the messages list and
+    passes it back on subsequent turns to maintain conversation history.
     """
-    client = anthropic.AsyncAnthropic(
-        api_key=os.environ.get("ANTHROPIC_API_KEY")
-    )
-
-    messages: list[dict[str, Any]] = [
-        {"role": "user", "content": user_message}
-    ]
-
     for iteration in range(MAX_ITERATIONS):
         response = await client.messages.create(
             model=MODEL,
@@ -61,23 +57,21 @@ async def run_query(user_message: str) -> str:
         )
 
         if response.stop_reason == "end_turn":
-            # Extract final text response
             for block in response.content:
                 if block.type == "text":
-                    return block.text
-            return "(No text response)"
+                    # Persist the assistant reply so follow-up turns see it
+                    messages.append({"role": "assistant", "content": response.content})
+                    return block.text, messages
+            return "(No text response)", messages
 
         if response.stop_reason != "tool_use":
-            # Unexpected stop reason
             for block in response.content:
                 if block.type == "text":
-                    return block.text
-            return f"Stopped unexpectedly: {response.stop_reason}"
+                    return block.text, messages
+            return f"Stopped unexpectedly: {response.stop_reason}", messages
 
-        # Append assistant turn
+        # Append assistant turn and execute tool calls
         messages.append({"role": "assistant", "content": response.content})
-
-        # Execute all tool calls and collect results
         tool_results: list[dict[str, Any]] = []
         for block in response.content:
             if block.type == "tool_use":
@@ -88,10 +82,30 @@ async def run_query(user_message: str) -> str:
                     "tool_use_id": block.id,
                     "content": result_text,
                 })
-
         messages.append({"role": "user", "content": tool_results})
 
-    return "Reached maximum iterations without a final response."
+    return "Reached maximum iterations without a final response.", messages
+
+
+async def run_query(user_message: str) -> str:
+    """Single-turn query. Starts a fresh conversation each call."""
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_message}]
+    text, _ = await _run_turn(client, messages)
+    return text
+
+
+async def run_chat_turn(
+    user_message: str,
+    history: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]]]:
+    """
+    Multi-turn chat. Pass the history list from the previous turn; get back
+    the response text and the updated history to pass into the next turn.
+    """
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    history.append({"role": "user", "content": user_message})
+    return await _run_turn(client, history)
 
 
 def run_query_sync(user_message: str) -> str:

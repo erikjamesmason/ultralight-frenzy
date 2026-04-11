@@ -149,13 +149,43 @@ def ingest(
 def query(
     message: str = typer.Argument(..., help="Natural language gear query."),
 ):
-    """Ask the AI agent a free-form gear question."""
+    """Ask the AI agent a free-form gear question (single turn)."""
     from agent.agent import run_query_sync
 
     _init_db()
     with console.status("Thinking…"):
         result = run_query_sync(message)
     console.print(result)
+
+
+# ---------------------------------------------------------------------------
+# chat
+# ---------------------------------------------------------------------------
+
+@app.command()
+def chat():
+    """Interactive multi-turn chat with the gear agent. Type 'exit' to quit."""
+    from agent.agent import run_chat_turn
+
+    _init_db()
+    history: list[dict] = []
+    console.print("[bold cyan]Gear Chat[/bold cyan] — type [bold]exit[/bold] to quit\n")
+
+    while True:
+        try:
+            user_input = console.input("[bold green]You:[/bold green] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            break
+
+        with console.status("Thinking…"):
+            result, history = asyncio.run(run_chat_turn(user_input, history))
+
+        console.print(f"\n[bold blue]Gear:[/bold blue] {result}\n")
 
 
 # ---------------------------------------------------------------------------
