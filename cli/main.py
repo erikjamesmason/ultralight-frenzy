@@ -22,6 +22,49 @@ app = typer.Typer(
 console = Console()
 
 
+@app.command()
+def debug_lp(
+    list_id: str = typer.Argument(..., help="LighterPack list ID to inspect."),
+):
+    """Fetch a LighterPack page and print what the scraper sees — for debugging."""
+    import asyncio
+    import httpx
+    from bs4 import BeautifulSoup
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; UltralightFrenzy/1.0)"
+        )
+    }
+
+    async def fetch():
+        async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
+            url = f"https://lighterpack.com/r/{list_id}"
+            console.print(f"Fetching [bold]{url}[/bold]…")
+            resp = await client.get(url)
+            console.print(f"Status: {resp.status_code}")
+            html = resp.text
+            soup = BeautifulSoup(html, "html.parser")
+
+            console.print(f"\n[bold]<script> tags found:[/bold] {len(soup.find_all('script'))}")
+            for i, script in enumerate(soup.find_all("script")):
+                text = (script.string or "")
+                src = script.get("src", "")
+                console.print(f"  [{i}] src={src!r} len={len(text)} "
+                              f"has_categories={'categories' in text} "
+                              f"has_items={'\"items\"' in text} "
+                              f"preview={text[:120]!r}")
+
+            console.print(f"\n[bold]Rows with 'item' in class:[/bold]")
+            for row in soup.find_all(class_=lambda c: c and "item" in c.lower())[:5]:
+                console.print(f"  {row.name} class={row.get('class')} text={row.get_text(strip=True)[:80]!r}")
+
+            console.print(f"\n[bold]First 2000 chars of raw HTML:[/bold]")
+            console.print(html[:2000])
+
+    asyncio.run(fetch())
+
+
 def _init_db():
     from db.client import get_collection
     return get_collection(
