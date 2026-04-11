@@ -7,6 +7,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from app.routers import chat, gear, ingest, search
 
@@ -33,6 +34,15 @@ app = FastAPI(
     description="Agentic RAG for ultralight backpacking gear",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.include_router(chat.router)

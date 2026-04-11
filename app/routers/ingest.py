@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends
 
+from app.dependencies import verify_api_key
 from app.schemas import AgentQueryRequest, AgentQueryResponse, IngestRequest, IngestResponse
 from db import operations as db
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 _ingest_status: dict[str, str] = {"status": "idle", "last_count": "0"}
 
 
-@router.post("/ingest/scrape", response_model=IngestResponse)
+@router.post("/ingest/scrape", response_model=IngestResponse, dependencies=[Depends(verify_api_key)])
 async def trigger_scrape(req: IngestRequest, background_tasks: BackgroundTasks):
     items_upserted = 0
     errors: list[str] = []
@@ -47,7 +48,7 @@ def ingest_status():
     }
 
 
-@router.post("/agent/query", response_model=AgentQueryResponse)
+@router.post("/agent/query", response_model=AgentQueryResponse, dependencies=[Depends(verify_api_key)])
 async def agent_query(req: AgentQueryRequest):
     from agent.agent import run_query
     result = await run_query(req.message)

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.dependencies import verify_api_key
 from app.schemas import GearItemOut
 from db import operations as db
 
@@ -33,7 +34,7 @@ def get_gear(item_id: str):
     return GearItemOut(**item)
 
 
-@router.delete("/{item_id}", status_code=204)
+@router.delete("/{item_id}", status_code=204, dependencies=[Depends(verify_api_key)])
 def delete_gear(item_id: str):
     item = db.get_by_id(item_id)
     if not item:
