@@ -116,66 +116,37 @@ class LighterPackScraper(BaseScraper):
 
     def _parse_item(self, el: Tag, category: str, source_url: str) -> GearItem | None:
         try:
-            # --- Weight (most reliable: mg attribute) ---
+            # --- Weight: <input class="lpMG" type="hidden" value="2721552"/> (milligrams) ---
             weight_g = 0.0
-            weight_el = el.select_one("[mg]")
-            if weight_el:
-                mg = weight_el.get("mg")
-                if mg:
-                    weight_g = round(int(mg) / 1000, 1)
+            mg_input = el.select_one("input.lpMG")
+            if mg_input:
+                val = mg_input.get("value", "")
+                if val:
+                    weight_g = round(int(val) / 1000, 1)
 
-            # --- Name ---
-            name = ""
-            for selector in [".lpName", ".lpItemName", "[class*='lpName']"]:
-                name_el = el.select_one(selector)
-                if name_el:
-                    name = name_el.get_text(strip=True)
-                    break
-
-            # Fallback: first text-heavy cell that isn't price/weight
-            if not name:
-                for cell in el.select(".lpCell"):
-                    text = cell.get_text(strip=True)
-                    # Skip cells that look like price/weight/qty
-                    if text and not re.match(r'^[\$\d\.,\s]+$', text) and len(text) > 2:
-                        name = text
-                        break
-
-            # Last resort: strip price/weight noise from full element text
-            if not name:
-                full = el.get_text(separator=" ", strip=True)
-                # Remove dollar amounts and unit selectors
-                full = re.sub(r'\$[\d\.]+', '', full)
-                full = re.sub(r'\b\d+\s*(oz|lb|g|kg)\b', '', full, flags=re.I)
-                full = re.sub(r'\b(oz|lb|g|kg)\b', '', full, flags=re.I)
-                full = re.sub(r'\s+', ' ', full).strip()
-                name = full[:80] if full else ""
-
+            # --- Name: <span class="lpName"> ---
+            name_el = el.select_one(".lpName")
+            name = name_el.get_text(strip=True) if name_el else ""
             if not name:
                 return None
 
-            # --- Brand: first word(s) of the name heuristic ---
-            brand = "Unknown"
-            parts = name.split()
-            if len(parts) >= 2:
-                brand = " ".join(parts[:2]).title()
+            # --- Description: <span class="lpDescription"> ---
+            desc_el = el.select_one(".lpDescription")
+            desc = desc_el.get_text(strip=True) if desc_el else ""
 
-            # --- Price ---
+            # --- Price: <span class="lpPriceCell"> ---
             price_usd = None
-            price_el = el.select_one(".lpPrice, [class*='lpPrice']")
+            price_el = el.select_one(".lpPriceCell")
             if price_el:
-                price_text = price_el.get_text(strip=True)
-                m = re.search(r'[\d\.]+', price_text.replace(",", ""))
+                m = re.search(r'[\d\.]+', price_el.get_text().replace(",", ""))
                 if m:
-                    val = float(m.group())
-                    if val > 0:
-                        price_usd = val
+                    val_f = float(m.group())
+                    if val_f > 0:
+                        price_usd = val_f
 
-            # --- Description ---
-            desc = ""
-            desc_el = el.select_one(".lpDescription, [class*='lpDescription']")
-            if desc_el:
-                desc = desc_el.get_text(strip=True)
+            # --- Brand: first two words of name as heuristic ---
+            parts = name.split()
+            brand = " ".join(parts[:2]).title() if len(parts) >= 2 else name.title()
 
             return GearItem(
                 id=GearItem.make_id(brand, name),
