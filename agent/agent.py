@@ -27,6 +27,7 @@ When answering queries:
 - Convert weights to both grams and lbs/oz when relevant.
 - For kit-building, consider balance across shelter, sleep, pack, and layers.
 - Be concise but specific — hikers want numbers, not generalities.
+- Respond in plain text only. No markdown, no bullet formatting with **, no emojis.
 """
 
 
