@@ -1,32 +1,22 @@
-"""Local sentence-transformers embedding function for ChromaDB."""
+"""ChromaDB embedding function — uses the built-in ONNX default (no torch required)."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from chromadb import EmbeddingFunction, Documents, Embeddings
-
-if TYPE_CHECKING:
-    pass
-
-_model = None
-
-
-def _get_model(model_name: str):
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer(model_name)
-    return _model
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction as _DefaultEF
 
 
 class LocalEmbeddingFunction(EmbeddingFunction):
-    """Wraps sentence-transformers for use as a ChromaDB embedding function."""
+    """
+    Wraps chromadb's built-in DefaultEmbeddingFunction (all-MiniLM-L6-v2 via onnxruntime).
+
+    No torch or sentence-transformers required — onnxruntime handles inference.
+    The model_name parameter is accepted for API compatibility but the bundled
+    ONNX model is always all-MiniLM-L6-v2.
+    """
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
-        self.model_name = model_name
+        self._ef = _DefaultEF()
 
     def __call__(self, input: Documents) -> Embeddings:
-        model = _get_model(self.model_name)
-        embeddings = model.encode(list(input), show_progress_bar=False)
-        return embeddings.tolist()
+        return self._ef(input)
