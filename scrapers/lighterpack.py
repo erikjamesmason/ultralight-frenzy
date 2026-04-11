@@ -6,15 +6,15 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from scrapers.base import (
     BaseScraper,
     GearItem,
     normalize_category,
-    parse_weight_g,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class LighterPackScraper(BaseScraper):
             logger.warning(
                 "No LighterPack list IDs provided. "
                 "Pass them with --lp-ids, e.g.: "
-                "uv run gear ingest --sources lighterpack --lp-ids abc123 def456"
+                "uv run gear ingest --sources lighterpack --lp-ids abc123"
             )
             return []
 
@@ -70,155 +70,124 @@ class LighterPackScraper(BaseScraper):
         url = f"https://lighterpack.com/r/{list_id}"
         resp = await client.get(url)
         resp.raise_for_status()
-
-        # Try to find embedded JSON in the page (LighterPack hydrates the page
-        # with a JSON blob in a <script> tag)
-        data = self._extract_json(resp.text)
-        if data:
-            return self._parse_json(data, list_id, url)
-
-        # Fallback: parse the HTML table directly
         return self._parse_html(resp.text, list_id, url)
 
-    # ------------------------------------------------------------------
-    # JSON extraction (LighterPack embeds pack data in the page script)
-    # ------------------------------------------------------------------
-
-    def _extract_json(self, html: str) -> dict[str, Any] | None:
-        """Look for the JSON pack data embedded in <script> tags."""
-        # Pattern 1: window.list = {...}  or  var list = {...}
-        for pattern in [
-            r'window\.list\s*=\s*(\{.+?\});',
-            r'var\s+list\s*=\s*(\{.+?\});',
-            r'"list"\s*:\s*(\{.+?"categories".+?\])',
-        ]:
-            m = re.search(pattern, html, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(1))
-                except json.JSONDecodeError:
-                    continue
-
-        # Pattern 2: look for any script tag that contains "categories"
-        soup = BeautifulSoup(html, "html.parser")
-        for script in soup.find_all("script"):
-            text = script.string or ""
-            if '"categories"' in text:
-                # Try to extract the JSON object containing categories
-                m = re.search(r'(\{[^{}]*"categories"\s*:\s*\[.+?\]\s*\})', text, re.DOTALL)
-                if m:
-                    try:
-                        return json.loads(m.group(1))
-                    except json.JSONDecodeError:
-                        continue
-        return None
-
-    def _parse_json(
-        self, data: dict[str, Any], list_id: str, source_url: str
-    ) -> list[GearItem]:
-        items: list[GearItem] = []
-        categories = data.get("categories", [])
-        for cat_data in categories:
-            cat_name = cat_data.get("name", "other")
-            category = normalize_category(cat_name)
-            for entry in cat_data.get("items", []):
-                item = self._entry_to_gear_item(entry, category, list_id, source_url)
-                if item:
-                    items.append(item)
-        return items
-
-    def _entry_to_gear_item(
-        self,
-        entry: dict[str, Any],
-        category: str,
-        list_id: str,
-        source_url: str,
-    ) -> GearItem | None:
-        name = (entry.get("name") or "").strip()
-        if not name:
-            return None
-
-        # Weight: LighterPack stores in grams or as a display string
-        weight_g = 0.0
-        raw_weight = entry.get("weight", 0)
-        if isinstance(raw_weight, (int, float)):
-            weight_g = float(raw_weight)
-        else:
-            w = parse_weight_g(str(raw_weight))
-            weight_g = w or 0.0
-
-        # LighterPack unit field: 1=oz, 2=lb, 3=g, 4=kg
-        unit = entry.get("unit", 3)
-        if weight_g > 0 and unit == 1:
-            weight_g = round(weight_g * 28.3495, 1)
-        elif weight_g > 0 and unit == 2:
-            weight_g = round(weight_g * 453.592, 1)
-        elif weight_g > 0 and unit == 4:
-            weight_g = round(weight_g * 1000, 1)
-
-        brand = (entry.get("brand") or "Unknown").strip()
-        description = (entry.get("description") or "").strip()
-        link = (entry.get("url") or "").strip()
-
-        return GearItem(
-            id=GearItem.make_id(brand, name),
-            name=name,
-            brand=brand,
-            category=category,
-            weight_g=weight_g,
-            description=description,
-            source_url=link or source_url,
-        )
-
-    # ------------------------------------------------------------------
-    # HTML table fallback
-    # ------------------------------------------------------------------
-
-    def _parse_html(
-        self, html: str, list_id: str, source_url: str
-    ) -> list[GearItem]:
-        """
-        Fallback: parse the rendered HTML gear table.
-        LighterPack renders rows like:
-          <tr class="item-row"> ... <td class="item-name">...</td> ...
-        """
+    def _parse_html(self, html: str, list_id: str, source_url: str) -> list[GearItem]:
         soup = BeautifulSoup(html, "html.parser")
         items: list[GearItem] = []
+
+        # Each category is a <div> or <ul> with class lpCategory, containing:
+        #   - a category name header
+        #   - <li class="lpItem"> rows
+        # Walk all lpItem elements and track the nearest preceding category header.
+
         current_category = "other"
 
-        for row in soup.select("tr"):
-            # Category header rows
-            cat_cell = row.select_one(".category-name, [class*='categoryName']")
-            if cat_cell:
-                current_category = normalize_category(cat_cell.get_text(strip=True))
+        # Collect all category headers and item rows in document order
+        for el in soup.find_all(True):
+            if not isinstance(el, Tag):
+                continue
+
+            classes = el.get("class") or []
+
+            # Category header — lpCategory or lpCategoryName
+            if "lpCategory" in classes or "lpCategoryName" in classes:
+                text = el.get_text(strip=True)
+                if text:
+                    current_category = normalize_category(text)
+                continue
+
+            # Also catch <li class="lpRow"> that has a category name cell
+            if "lpRow" in classes and "lpHeader" not in classes and "lpItem" not in classes:
+                name_cell = el.select_one(".lpCell:not(.lpNumber):not(.lpLegendCell)")
+                if name_cell:
+                    text = name_cell.get_text(strip=True)
+                    if text and text not in ("Category", "Price", "Weight", "Qty", ""):
+                        current_category = normalize_category(text)
                 continue
 
             # Item rows
-            name_cell = row.select_one(
-                ".item-name, [class*='itemName'], [class*='item-name']"
-            )
-            if not name_cell:
-                continue
-            name = name_cell.get_text(strip=True)
-            if not name:
-                continue
+            if "lpItem" in classes:
+                item = self._parse_item(el, current_category, source_url)
+                if item:
+                    items.append(item)
 
-            weight_cell = row.select_one(
-                ".item-weight, [class*='itemWeight'], [class*='item-weight']"
-            )
-            weight_g = 0.0
-            if weight_cell:
-                w = parse_weight_g(weight_cell.get_text(strip=True))
-                weight_g = w or 0.0
-
-            items.append(
-                GearItem(
-                    id=GearItem.make_id("unknown", name),
-                    name=name,
-                    brand="Unknown",
-                    category=current_category,
-                    weight_g=weight_g,
-                    source_url=source_url,
-                )
-            )
         return items
+
+    def _parse_item(self, el: Tag, category: str, source_url: str) -> GearItem | None:
+        try:
+            # --- Weight (most reliable: mg attribute) ---
+            weight_g = 0.0
+            weight_el = el.select_one("[mg]")
+            if weight_el:
+                mg = weight_el.get("mg")
+                if mg:
+                    weight_g = round(int(mg) / 1000, 1)
+
+            # --- Name ---
+            name = ""
+            for selector in [".lpName", ".lpItemName", "[class*='lpName']"]:
+                name_el = el.select_one(selector)
+                if name_el:
+                    name = name_el.get_text(strip=True)
+                    break
+
+            # Fallback: first text-heavy cell that isn't price/weight
+            if not name:
+                for cell in el.select(".lpCell"):
+                    text = cell.get_text(strip=True)
+                    # Skip cells that look like price/weight/qty
+                    if text and not re.match(r'^[\$\d\.,\s]+$', text) and len(text) > 2:
+                        name = text
+                        break
+
+            # Last resort: strip price/weight noise from full element text
+            if not name:
+                full = el.get_text(separator=" ", strip=True)
+                # Remove dollar amounts and unit selectors
+                full = re.sub(r'\$[\d\.]+', '', full)
+                full = re.sub(r'\b\d+\s*(oz|lb|g|kg)\b', '', full, flags=re.I)
+                full = re.sub(r'\b(oz|lb|g|kg)\b', '', full, flags=re.I)
+                full = re.sub(r'\s+', ' ', full).strip()
+                name = full[:80] if full else ""
+
+            if not name:
+                return None
+
+            # --- Brand: first word(s) of the name heuristic ---
+            brand = "Unknown"
+            parts = name.split()
+            if len(parts) >= 2:
+                brand = " ".join(parts[:2]).title()
+
+            # --- Price ---
+            price_usd = None
+            price_el = el.select_one(".lpPrice, [class*='lpPrice']")
+            if price_el:
+                price_text = price_el.get_text(strip=True)
+                m = re.search(r'[\d\.]+', price_text.replace(",", ""))
+                if m:
+                    val = float(m.group())
+                    if val > 0:
+                        price_usd = val
+
+            # --- Description ---
+            desc = ""
+            desc_el = el.select_one(".lpDescription, [class*='lpDescription']")
+            if desc_el:
+                desc = desc_el.get_text(strip=True)
+
+            return GearItem(
+                id=GearItem.make_id(brand, name),
+                name=name,
+                brand=brand,
+                category=category,
+                weight_g=weight_g,
+                price_usd=price_usd,
+                value_rating=GearItem.compute_value_rating(price_usd, weight_g or 1.0),
+                description=desc,
+                source_url=source_url,
+            )
+        except Exception as exc:
+            logger.debug("Failed to parse lpItem: %s", exc)
+            return None
