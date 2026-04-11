@@ -19,6 +19,12 @@ from scrapers.base import (
 
 logger = logging.getLogger(__name__)
 
+KNOWN_MULTIWORD_BRANDS = {
+    "big agnes", "sea to summit", "six moon", "zpacks", "enlightened equipment",
+    "outdoor research", "mountain hardwear", "black diamond", "gregory mountain",
+    "osprey packs", "therm a", "western mountaineering",
+}
+
 SEED_REVIEW_URLS = [
     ("https://www.outdoorgearlab.com/topics/camping-and-hiking/best-backpacking-tent", "shelter"),
     ("https://www.outdoorgearlab.com/topics/camping-and-hiking/best-backpacking-sleeping-bag", "sleep"),
@@ -97,12 +103,17 @@ class OutdoorGearLabScraper(BaseScraper):
             if not name or len(name) < 3:
                 return None
 
-            # Brand — first word or explicit brand element
+            # Brand — explicit brand element, multi-word known brands, or first word
             brand_el = section.select_one("[class*='brand']")
             if brand_el:
                 brand = brand_el.get_text(strip=True)
             else:
-                brand = name.split()[0] if name else "Unknown"
+                words = name.split()
+                two_word_prefix = " ".join(words[:2]).lower() if len(words) >= 2 else ""
+                if two_word_prefix and two_word_prefix in KNOWN_MULTIWORD_BRANDS:
+                    brand = " ".join(words[:2])
+                else:
+                    brand = words[0] if words else "Unknown"
 
             # Price
             price_el = section.select_one("[class*='price'], [data-price]")
@@ -136,14 +147,17 @@ class OutdoorGearLabScraper(BaseScraper):
             item_id = GearItem.make_id(brand, name)
             value_rating = GearItem.compute_value_rating(price_usd, weight_g or 1.0)
 
-            # Collect any visible specs
+            # Collect any visible specs using th/td pairing
             specs: dict[str, str] = {}
-            spec_rows = section.select("td, [class*='spec']")
-            for i in range(0, len(spec_rows) - 1, 2):
-                key = spec_rows[i].get_text(strip=True)
-                val = spec_rows[i + 1].get_text(strip=True)
-                if key and val:
-                    specs[key] = val
+            for table in section.select("table"):
+                for row in table.select("tr"):
+                    th = row.select_one("th")
+                    td = row.select_one("td")
+                    if th and td:
+                        key = th.get_text(strip=True)
+                        val = td.get_text(strip=True)
+                        if key:
+                            specs[key] = val
 
             return GearItem(
                 id=item_id,

@@ -80,13 +80,108 @@ class REIScraper(BaseScraper):
                 break
         return items
 
+    def _extract_from_json_ld(
+        self, soup: BeautifulSoup, category: str, source_url: str
+    ) -> list[GearItem]:
+        """Extract product data from JSON-LD <script> tags."""
+        import json
+
+        items: list[GearItem] = []
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+            except Exception:
+                continue
+
+            # Normalise to a flat list of dicts
+            entries = data if isinstance(data, list) else [data]
+
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("@type") != "Product":
+                    continue
+
+                name = entry.get("name", "").strip()
+                if not name:
+                    continue
+
+                # Brand
+                brand_raw = entry.get("brand", {})
+                if isinstance(brand_raw, dict):
+                    brand = brand_raw.get("name", "Unknown")
+                else:
+                    brand = str(brand_raw) if brand_raw else "Unknown"
+                brand = brand.strip() or "Unknown"
+
+                # Price
+                price_usd: float | None = None
+                offers = entry.get("offers")
+                if isinstance(offers, dict):
+                    try:
+                        price_usd = float(offers["price"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                elif isinstance(offers, list) and offers:
+                    try:
+                        price_usd = float(offers[0]["price"])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+
+                # Weight — scan additionalProperty list
+                weight_g: float | None = None
+                for prop in entry.get("additionalProperty", []):
+                    if not isinstance(prop, dict):
+                        continue
+                    if "weight" in prop.get("name", "").lower():
+                        weight_g = parse_weight_g(str(prop.get("value", "")))
+                        if weight_g is not None:
+                            break
+
+                description = entry.get("description", "")
+
+                # Source URL — prefer the product URL if present
+                item_url = entry.get("url") or source_url
+
+                item_id = GearItem.make_id(brand, name)
+                value_rating = GearItem.compute_value_rating(price_usd, weight_g or 1.0)
+
+                items.append(
+                    GearItem(
+                        id=item_id,
+                        name=name,
+                        brand=brand,
+                        category=category,
+                        weight_g=weight_g or 0.0,
+                        price_usd=price_usd,
+                        value_rating=value_rating,
+                        description=description,
+                        source_url=item_url,
+                    )
+                )
+
+        return items
+
     def _parse_listing(
         self, html: str, category: str, source_url: str
     ) -> list[GearItem]:
         soup = BeautifulSoup(html, "html.parser")
         items: list[GearItem] = []
 
-        # REI uses a React-hydrated store — try JSON-LD and fallback to meta tags
+        # REI is a React SPA — JSON-LD is more reliable than HTML selectors
+        items = self._extract_from_json_ld(soup, category, source_url)
+        if items:
+            zero_weight = sum(1 for i in items if i.weight_g == 0)
+            if zero_weight:
+                logger.info(
+                    "REI %s: %d/%d items have zero weight (selectors may be stale)",
+                    source_url,
+                    zero_weight,
+                    len(items),
+                )
+            return items
+
+        # Fallback: card-scraping path
         product_cards = soup.select("[data-ui='product-card']") or soup.select(
             ".product-card"
         )
@@ -99,6 +194,14 @@ class REIScraper(BaseScraper):
             if item:
                 items.append(item)
 
+        zero_weight = sum(1 for i in items if i.weight_g == 0)
+        if zero_weight:
+            logger.info(
+                "REI %s: %d/%d items have zero weight (selectors may be stale)",
+                source_url,
+                zero_weight,
+                len(items),
+            )
         return items
 
     def _parse_card(
