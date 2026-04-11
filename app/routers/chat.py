@@ -7,11 +7,12 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
-from agent.agent import run_chat_turn
+from agent.agent import run_chat_turn, stream_chat_turn
 from app.schemas import (
     ChatRequest,
     ChatResponse,
@@ -104,3 +105,46 @@ async def session_message(
 def delete_session(session_id: str) -> None:
     """Clear and remove a session."""
     _sessions.pop(session_id, None)
+
+
+async def _sse_generator(gen: AsyncIterator[str]):
+    """Wrap an AsyncIterator[str] as SSE data lines."""
+    async for chunk in gen:
+        yield f"data: {chunk}\n\n"
+
+
+@router.post("/stream", response_class=StreamingResponse)
+async def chat_stream_stateless(req: ChatRequest) -> StreamingResponse:
+    """
+    Stateless streaming chat (SSE).
+
+    Same contract as POST /chat but streams text deltas as Server-Sent Events.
+    Each chunk is: `data: <delta>\\n\\n`
+    Final chunk is: `data: [DONE]\\n\\n`
+    Pass the same `history` round-trip pattern as the non-streaming endpoint.
+
+    Note: because history is mutated inside stream_chat_turn, the updated
+    history is not returned in the HTTP response. For multi-turn stateless
+    streaming, use the stateful /sessions/{id}/stream endpoint instead.
+    """
+    history = list(req.history)
+    gen = stream_chat_turn(req.message, history)
+    return StreamingResponse(_sse_generator(gen), media_type="text/event-stream")
+
+
+@router.post("/sessions/{session_id}/stream", response_class=StreamingResponse)
+async def chat_stream_session(
+    session_id: str, req: SessionMessageRequest
+) -> StreamingResponse:
+    """
+    Stateful streaming chat (SSE) — server manages history.
+
+    Streams text deltas for a message in an existing session.
+    Create a session first with POST /chat/sessions.
+    """
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    entry = _sessions[session_id]
+    entry.last_access = time.monotonic()
+    gen = stream_chat_turn(req.message, entry.messages)
+    return StreamingResponse(_sse_generator(gen), media_type="text/event-stream")

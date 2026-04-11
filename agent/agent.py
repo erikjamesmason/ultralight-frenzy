@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 import anthropic
 
@@ -106,6 +106,69 @@ async def run_chat_turn(
     client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
     history.append({"role": "user", "content": user_message})
     return await _run_turn(client, history)
+
+
+async def stream_chat_turn(
+    user_message: str,
+    history: list[dict[str, Any]],
+) -> AsyncIterator[str]:
+    """
+    Multi-turn streaming chat. Yields text delta strings as they arrive.
+    Yields "[DONE]" as the final item when the turn is complete.
+    History is mutated in-place (same contract as run_chat_turn).
+    """
+    client = anthropic.AsyncAnthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+    history.append({"role": "user", "content": user_message})
+
+    for iteration in range(MAX_ITERATIONS):
+        full_text = ""
+        tool_use_blocks: list[Any] = []
+        content_blocks: list[Any] = []
+
+        async with client.messages.stream(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            tools=TOOL_DEFINITIONS,  # type: ignore[arg-type]
+            messages=history,
+        ) as stream:
+            async for event in stream:
+                # Stream text deltas to the caller immediately
+                if event.type == "content_block_delta":
+                    if hasattr(event.delta, "text"):
+                        delta = event.delta.text
+                        full_text += delta
+                        yield delta
+
+            # After stream ends, get the final message to inspect stop_reason
+            final = await stream.get_final_message()
+
+        content_blocks = list(final.content)
+        stop_reason = final.stop_reason
+
+        # Collect any tool-use blocks from the final content
+        tool_use_blocks = [b for b in content_blocks if b.type == "tool_use"]
+
+        if stop_reason == "end_turn" or not tool_use_blocks:
+            # Persist assistant reply and finish
+            history.append({"role": "assistant", "content": content_blocks})
+            yield "[DONE]"
+            return
+
+        # Tool-call turn: execute tools, append results, loop
+        history.append({"role": "assistant", "content": content_blocks})
+        tool_results: list[dict[str, Any]] = []
+        for block in tool_use_blocks:
+            logger.info("Stream tool call: %s(%s)", block.name, list(block.input.keys()))
+            result_text = dispatch_tool(block.name, dict(block.input))
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": result_text,
+            })
+        history.append({"role": "user", "content": tool_results})
+
+    yield "[DONE]"
 
 
 def run_query_sync(user_message: str) -> str:
