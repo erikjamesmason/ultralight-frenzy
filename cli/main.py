@@ -59,8 +59,16 @@ def debug_lp(
             for row in soup.find_all(class_=lambda c: c and "item" in c.lower())[:5]:
                 console.print(f"  {row.name} class={row.get('class')} text={row.get_text(strip=True)[:80]!r}")
 
-            console.print(f"\n[bold]First 2000 chars of raw HTML:[/bold]")
-            console.print(html[:2000])
+            console.print(f"\n[bold]Raw HTML of first lpItem:[/bold]")
+            first_item = soup.select_one("li.lpItem")
+            if first_item:
+                console.print(str(first_item))
+            else:
+                console.print("[red]No li.lpItem found[/red]")
+
+            console.print(f"\n[bold]All elements with [mg] attribute:[/bold]")
+            for el in soup.find_all(attrs={"mg": True})[:5]:
+                console.print(f"  {el.name} class={el.get('class')} mg={el.get('mg')} text={el.get_text(strip=True)[:40]!r}")
 
     asyncio.run(fetch())
 
