@@ -60,15 +60,31 @@ SHOPIFY_STORES: list[ShopifyStore] = [
         base_url="https://hammockgear.com",
     ),
     ShopifyStore(
-        name="Enlightened Equipment",
-        base_url="https://enlightenedequipment.com",
-    ),
-    ShopifyStore(
         name="Gossamer Gear",
         base_url="https://gossamergear.com",
     ),
     ShopifyStore(
         name="Six Moon Designs",
         base_url="https://sixmoondesigns.com",
+    ),
+    ShopifyStore(
+        name="Durston Gear",
+        base_url="https://durstongear.com",
+    ),
+    ShopifyStore(
+        name="Hyperlite Mountain Gear",
+        base_url="https://www.hyperlitemountaingear.com",
+    ),
+    ShopifyStore(
+        name="Tarptent",
+        base_url="https://www.tarptent.com",
+    ),
+    ShopifyStore(
+        name="Mountain Laurel Designs",
+        base_url="https://mountainlaureldesigns.com",
+    ),
+    ShopifyStore(
+        name="ULA Equipment",
+        base_url="https://www.ula-equipment.com",
     ),
 ]

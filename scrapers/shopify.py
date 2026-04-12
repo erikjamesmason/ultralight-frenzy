@@ -43,6 +43,18 @@ def _map_category(product_type: str, category_map: dict[str, str]) -> str:
     return "other"
 
 
+def _parse_weight_from_text(*texts: str) -> float | None:
+    """Try each text string in order; return the first parseable weight in grams."""
+    from scrapers.base import parse_weight_g
+    for text in texts:
+        if not text:
+            continue
+        w = parse_weight_g(text)
+        if w is not None and w > 0:
+            return w
+    return None
+
+
 class ShopifyScraper(BaseScraper):
     """Scrapes Shopify stores via the public /products.json API endpoint."""
 
@@ -91,7 +103,14 @@ class ShopifyScraper(BaseScraper):
                 )
                 break
 
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                logger.warning(
+                    "Shopify %s page %d: response is not valid JSON (body=%r)",
+                    store.name, page, resp.text[:120],
+                )
+                break
             products = data.get("products", [])
             if not products:
                 break
@@ -181,6 +200,33 @@ class ShopifyScraper(BaseScraper):
                 )
             )
 
-        # If no variant had weight data, fall back to a single zero-weight entry
-        # (caller will filter these out with weight_g > 0 check)
-        return items
+        if items:
+            return items
+
+        # Variant weight fields were empty — try to extract weight from
+        # product description and title (many ultralight brands publish specs there)
+        fallback_weight = _parse_weight_from_text(title, description)
+        if fallback_weight is None:
+            return []
+
+        # Use first variant's price if available
+        price_usd: float | None = None
+        if variants:
+            price_str = (variants[0].get("price") or "")
+            price_usd = parse_price_usd(price_str) if price_str else None
+
+        item_id = GearItem.make_id(brand, title)
+        value_rating = GearItem.compute_value_rating(price_usd, fallback_weight)
+        return [
+            GearItem(
+                id=item_id,
+                name=title,
+                brand=brand,
+                category=category,
+                weight_g=fallback_weight,
+                price_usd=price_usd,
+                value_rating=value_rating,
+                description=description,
+                source_url=source_url,
+            )
+        ]

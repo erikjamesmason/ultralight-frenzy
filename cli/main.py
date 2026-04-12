@@ -136,10 +136,10 @@ def _init_db():
 @app.command()
 def ingest(
     sources: list[str] = typer.Option(
-        ["lighterpack", "rei", "outdoorgearlab", "shopify"],
+        ["lighterpack", "outdoorgearlab", "shopify"],
         "--sources",
         "-s",
-        help="Scraper sources to run (lighterpack, rei, outdoorgearlab, shopify).",
+        help="Scraper sources to run (lighterpack, outdoorgearlab, shopify, rei).",
     ),
     lp_ids: Optional[list[str]] = typer.Option(
         None,
