@@ -381,6 +381,57 @@ def list_gear(
 
 
 # ---------------------------------------------------------------------------
+# discover
+# ---------------------------------------------------------------------------
+
+@app.command()
+def discover(
+    time_filter: str = typer.Option(
+        "year",
+        "--time",
+        "-t",
+        help="Reddit time filter: hour, day, week, month, year, all.",
+    ),
+    auto_ingest: bool = typer.Option(
+        False,
+        "--ingest",
+        help="Immediately ingest the discovered LighterPack lists.",
+    ),
+):
+    """Find public LighterPack list IDs shared on Reddit (r/ultralight etc.)."""
+    from scrapers.reddit_lp import discover_ids_sync
+
+    with console.status("Searching Reddit for LighterPack lists…"):
+        ids = discover_ids_sync(time_filter=time_filter)
+
+    if not ids:
+        console.print("[yellow]No LighterPack list IDs found.[/yellow]")
+        return
+
+    console.print(f"\n[bold green]Found {len(ids)} list IDs:[/bold green]\n")
+    for lp_id in ids:
+        console.print(f"  https://lighterpack.com/r/[bold]{lp_id}[/bold]")
+
+    console.print(
+        f"\nTo ingest all of them:\n"
+        f"  [bold]gear ingest --sources lighterpack"
+        + "".join(f" --lp-ids {i}" for i in ids)
+        + "[/bold]"
+    )
+
+    if auto_ingest:
+        from scrapers.lighterpack import LighterPackScraper
+        from db import operations as db
+
+        _init_db()
+        with console.status(f"Ingesting {len(ids)} LighterPack lists…"):
+            items = asyncio.run(LighterPackScraper(list_ids=ids).scrape())
+        valid = [i.to_dict() for i in items if i.weight_g > 0]
+        count = db.upsert_items(valid)
+        console.print(f"[green]✓[/green] Ingested {count} items from {len(ids)} lists.")
+
+
+# ---------------------------------------------------------------------------
 # serve
 # ---------------------------------------------------------------------------
 
