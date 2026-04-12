@@ -412,11 +412,12 @@ def discover(
     for lp_id in ids:
         console.print(f"  https://lighterpack.com/r/[bold]{lp_id}[/bold]")
 
+    lp_flags = " ".join(f"--lp-ids {i}" for i in ids)
     console.print(
         f"\nTo ingest all of them:\n"
-        f"  [bold]gear ingest --sources lighterpack"
-        + "".join(f" --lp-ids {i}" for i in ids)
-        + "[/bold]"
+        f"  [bold]uv run gear ingest --sources lighterpack {lp_flags}[/bold]\n"
+        f"\nOr inside Docker:\n"
+        f"  [bold]docker compose exec gear uv run gear ingest --sources lighterpack {lp_flags}[/bold]"
     )
 
     if auto_ingest:
