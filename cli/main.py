@@ -136,10 +136,10 @@ def _init_db():
 @app.command()
 def ingest(
     sources: list[str] = typer.Option(
-        ["lighterpack", "rei", "outdoorgearlab"],
+        ["lighterpack", "rei", "outdoorgearlab", "shopify"],
         "--sources",
         "-s",
-        help="Scraper sources to run (lighterpack, rei, outdoorgearlab).",
+        help="Scraper sources to run (lighterpack, rei, outdoorgearlab, shopify).",
     ),
     lp_ids: Optional[list[str]] = typer.Option(
         None,
@@ -155,6 +155,7 @@ def ingest(
     from scrapers.lighterpack import LighterPackScraper
     from scrapers.rei import REIScraper
     from scrapers.outdoorgearlab import OutdoorGearLabScraper
+    from scrapers.shopify import ShopifyScraper
     from db import operations as db
 
     _init_db()
@@ -176,6 +177,8 @@ def ingest(
                 items = asyncio.run(REIScraper().scrape())
             elif source == "outdoorgearlab":
                 items = asyncio.run(OutdoorGearLabScraper().scrape())
+            elif source == "shopify":
+                items = asyncio.run(ShopifyScraper().scrape())
             else:
                 console.print(f"[red]Unknown source:[/red] {source}")
                 continue
