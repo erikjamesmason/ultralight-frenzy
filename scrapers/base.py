@@ -53,7 +53,8 @@ class GearItem:
     @staticmethod
     def make_id(brand: str, name: str) -> str:
         raw = f"{brand}-{name}".lower()
-        return re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        slug = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        return slug or "unknown"
 
     @staticmethod
     def compute_value_rating(price_usd: float | None, weight_g: float) -> float | None:
@@ -106,18 +107,18 @@ def parse_weight_g(text: str) -> float | None:
     m = re.search(r"([\d.]+)\s*g\b", text)
     if m:
         return float(m.group(1))
-    # Ounces
-    m = re.search(r"([\d.]+)\s*oz", text)
-    if m:
-        return round(float(m.group(1)) * 28.3495, 1)
-    # Pounds + oz
+    # Pounds (check before oz-only so "1 lb 3 oz" doesn't match just the 3 oz)
     lb = re.search(r"([\d.]+)\s*lb", text)
-    oz = re.search(r"([\d.]+)\s*oz", text)
     if lb:
         grams = float(lb.group(1)) * 453.592
+        oz = re.search(r"([\d.]+)\s*oz", text)
         if oz:
             grams += float(oz.group(1)) * 28.3495
         return round(grams, 1)
+    # Ounces only
+    m = re.search(r"([\d.]+)\s*oz", text)
+    if m:
+        return round(float(m.group(1)) * 28.3495, 1)
     return None
 
 

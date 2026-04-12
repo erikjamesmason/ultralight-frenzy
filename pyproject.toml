@@ -29,5 +29,11 @@ dependencies = [
 [project.scripts]
 gear = "cli.main:app"
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app", "agent", "db", "scrapers", "cli"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -62,6 +62,10 @@ def upsert_items(items: list[dict[str, Any]]) -> int:
     """Batch upsert. Returns number of items upserted."""
     if not items:
         return 0
+    # Drop items with empty/missing IDs (ChromaDB requires non-empty string IDs).
+    items = [item for item in items if item.get("id")]
+    if not items:
+        return 0
     # Deduplicate by ID — ChromaDB upsert handles existing records in the DB
     # but rejects duplicate IDs within the same batch call.
     by_id = {item["id"]: item for item in items}
