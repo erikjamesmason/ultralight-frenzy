@@ -8,9 +8,9 @@ vector DB; a Claude agentic loop answers natural-language queries using semantic
 
 ### Docker (primary)
 ```bash
-docker-compose up --build     # first run, or after pyproject.toml changes
-docker-compose restart gear   # after Python code changes (no rebuild needed — source is volume-mounted)
-docker-compose exec gear uv run gear <command>   # run CLI commands inside container
+docker compose up --build     # first run, or after pyproject.toml/Dockerfile changes
+docker compose restart api    # after Python code changes (no rebuild needed — source is volume-mounted)
+docker compose exec api gear <command>   # run CLI commands inside container
 ```
 
 ### Local (no Docker)
@@ -81,8 +81,11 @@ Full Agent SDK migration (which eliminates the pause) is a planned follow-up spr
 ## Scraper notes
 - **LighterPack**: most reliable — semantic class names, weight in `input.lpMG[value]` (milligrams).
   Requires user-supplied list IDs (`--lp-ids`).
-- **REI**: tries JSON-LD `<script type="application/ld+json">` first (most reliable), falls back to
-  HTML selectors. REI uses React so HTML selectors go stale frequently.
+- **REI**: uses Playwright (headless Chromium) to bypass Akamai bot detection. Removed from default
+  sources — Akamai blocks datacenter/Docker IPs at the TCP level. Still runnable with `--sources rei`.
+- **Shopify**: hits `/products.json?limit=250` API for 10 specialty brands (Zpacks, Katabatic, etc.).
+  Falls back to parsing weight from product description when variant weight fields are empty.
+- **LighterPack discovery**: `gear discover` searches Reddit (r/ultralight etc.) for shared list IDs.
 - **OutdoorGearLab**: spec tables parsed via `<th>/<td>` pairing. Brand extracted from element,
   then checked against `KNOWN_MULTIWORD_BRANDS` set before falling back to first word of name.
 

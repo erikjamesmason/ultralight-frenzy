@@ -14,7 +14,7 @@ services:
           memory: 1g
 
   # ── Gear API + CLI ────────────────────────────────────────────────────────
-  gear:
+  api:
     build: .
     ports:
       - "8000:8000"

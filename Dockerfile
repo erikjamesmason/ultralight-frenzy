@@ -18,6 +18,7 @@ RUN uv run playwright install --with-deps chromium
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV CHROMA_PERSIST_PATH=/data/chroma
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-create the local data dir (used when running without a Chroma server)
 RUN mkdir -p /data/chroma
