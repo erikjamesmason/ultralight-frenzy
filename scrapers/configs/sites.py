@@ -56,10 +56,6 @@ SHOPIFY_STORES: list[ShopifyStore] = [
         base_url="https://katabaticgear.com",
     ),
     ShopifyStore(
-        name="Hammock Gear",
-        base_url="https://hammockgear.com",
-    ),
-    ShopifyStore(
         name="Gossamer Gear",
         base_url="https://gossamergear.com",
     ),
@@ -75,16 +71,6 @@ SHOPIFY_STORES: list[ShopifyStore] = [
         name="Hyperlite Mountain Gear",
         base_url="https://www.hyperlitemountaingear.com",
     ),
-    ShopifyStore(
-        name="Tarptent",
-        base_url="https://www.tarptent.com",
-    ),
-    ShopifyStore(
-        name="Mountain Laurel Designs",
-        base_url="https://mountainlaureldesigns.com",
-    ),
-    ShopifyStore(
-        name="ULA Equipment",
-        base_url="https://www.ula-equipment.com",
-    ),
+    # Confirmed NOT Shopify (404 or non-JSON on /products.json) — removed:
+    # Hammock Gear (WooCommerce), Tarptent, Mountain Laurel Designs, ULA Equipment
 ]
