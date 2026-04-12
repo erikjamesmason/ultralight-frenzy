@@ -73,6 +73,53 @@ def debug_lp(
     asyncio.run(fetch())
 
 
+@app.command()
+def debug_ogl(
+    url: str = typer.Argument(
+        default="https://www.outdoorgearlab.com/topics/camping-and-hiking/best-backpacking-tent",
+        help="OGL page URL to inspect.",
+    ),
+):
+    """Fetch an OutdoorGearLab page and print what the scraper sees — for debugging."""
+    import httpx
+    from bs4 import BeautifulSoup
+    from scrapers.base import BaseScraper
+
+    async def fetch():
+        async with httpx.AsyncClient(
+            headers=BaseScraper.HEADERS, timeout=20.0, follow_redirects=True
+        ) as client:
+            console.print(f"Fetching [bold]{url}[/bold]…")
+            resp = await client.get(url)
+            console.print(f"Status: {resp.status_code}")
+            if resp.status_code != 200:
+                console.print(f"[red]Response body:[/red] {resp.text[:500]}")
+                return
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            console.print(f"\n[bold]Page title:[/bold] {soup.title.string if soup.title else '(none)'}")
+
+            for label, selector in [
+                ("award-card", ".award-card"),
+                ("product-card", ".product-card"),
+                ("ProductCard*", "[class*='ProductCard']"),
+                ("award*", "[class*='award']"),
+                ("article", "article"),
+            ]:
+                els = soup.select(selector)
+                console.print(f"  {label}: {len(els)} elements")
+
+            console.print(f"\n[bold]First article HTML (first 800 chars):[/bold]")
+            art = soup.select_one("article")
+            console.print(str(art)[:800] if art else "[red]No article found[/red]")
+
+            console.print(f"\n[bold]All h2/h3 text on page (first 10):[/bold]")
+            for h in soup.select("h2, h3")[:10]:
+                console.print(f"  {h.name}: {h.get_text(strip=True)[:80]!r}")
+
+    asyncio.run(fetch())
+
+
 def _init_db():
     from db.client import get_collection
     return get_collection(
