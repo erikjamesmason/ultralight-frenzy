@@ -12,6 +12,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY . .
 RUN uv sync --no-dev
 
+# Install Playwright's Chromium browser + system deps (needed for JS-heavy sites like REI)
+RUN uv run playwright install --with-deps chromium
+
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV CHROMA_PERSIST_PATH=/data/chroma

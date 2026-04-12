@@ -1,25 +1,24 @@
-"""REI product page scraper."""
+"""REI product page scraper — uses Playwright to bypass Akamai bot detection."""
 
 from __future__ import annotations
 
+import json
 import logging
-import re
 from typing import Any
 
-import httpx
 from bs4 import BeautifulSoup
+from playwright.async_api import BrowserContext
 
 from scrapers.base import (
-    BaseScraper,
     GearItem,
     normalize_category,
     parse_price_usd,
     parse_weight_g,
 )
+from scrapers.playwright_base import PlaywrightScraper
 
 logger = logging.getLogger(__name__)
 
-# REI category search pages to crawl
 SEED_CATEGORIES = [
     ("https://www.rei.com/c/backpacking-tents", "shelter"),
     ("https://www.rei.com/c/sleeping-bags", "sleep"),
@@ -31,51 +30,57 @@ SEED_CATEGORIES = [
     ("https://www.rei.com/c/camp-stoves", "cooking"),
 ]
 
+# Selectors to try when waiting for the product grid to render
+_PRODUCT_SELECTORS = [
+    "[data-ui='product-card']",
+    ".VFTitledCard",
+    "[class*='product-card']",
+    "article",
+]
 
-class REIScraper(BaseScraper):
-    """Scrapes REI product listing pages for gear specs and prices."""
+
+class REIScraper(PlaywrightScraper):
+    """Scrapes REI category pages using headless Chromium."""
 
     def __init__(
         self,
         category_urls: list[tuple[str, str]] | None = None,
         max_pages: int = 2,
-        rate_limit: float = 1.5,
+        rate_limit: float = 2.5,
     ) -> None:
-        super().__init__(rate_limit)
+        super().__init__(rate_limit=rate_limit)
         self.category_urls = category_urls or SEED_CATEGORIES
         self.max_pages = max_pages
 
-    async def scrape(self) -> list[GearItem]:
+    async def _scrape_with_context(self, context: BrowserContext) -> list[GearItem]:
         items: list[GearItem] = []
-        async with httpx.AsyncClient(
-            headers=self.HEADERS,
-            timeout=20.0,
-            follow_redirects=True,
-        ) as client:
-            for url, category in self.category_urls:
-                try:
-                    fetched = await self._scrape_category(client, url, category)
-                    items.extend(fetched)
-                    logger.info("REI %s: scraped %d items", category, len(fetched))
-                except Exception as exc:
-                    logger.warning("REI category %s failed: %s", url, exc)
+        for url, category in self.category_urls:
+            try:
+                fetched = await self._scrape_category(context, url, category)
+                items.extend(fetched)
+                logger.info("REI %s: scraped %d items", category, len(fetched))
+            except Exception as exc:
+                logger.warning("REI category %s failed: %s", url, exc)
         return items
 
     async def _scrape_category(
-        self, client: httpx.AsyncClient, base_url: str, category: str
+        self, context: BrowserContext, base_url: str, category: str
     ) -> list[GearItem]:
         items: list[GearItem] = []
-        for page in range(1, self.max_pages + 1):
-            await self._throttle()
-            url = f"{base_url}?page={page}" if page > 1 else base_url
+        for page_num in range(1, self.max_pages + 1):
+            url = f"{base_url}?page={page_num}" if page_num > 1 else base_url
             try:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                page_items = self._parse_listing(resp.text, category, base_url)
+                # Try each wait selector in order; first match wins
+                wait_sel = _PRODUCT_SELECTORS[0]
+                page = await self._fetch_page(context, url, wait_selector=wait_sel, timeout=20000)
+                html = await page.content()
+                await page.close()
+
+                page_items = self._parse_listing(html, category, url)
                 if not page_items:
                     break
                 items.extend(page_items)
-            except httpx.HTTPStatusError as exc:
+            except Exception as exc:
                 logger.warning("REI page %s failed: %s", url, exc)
                 break
         return items
@@ -83,9 +88,6 @@ class REIScraper(BaseScraper):
     def _extract_from_json_ld(
         self, soup: BeautifulSoup, category: str, source_url: str
     ) -> list[GearItem]:
-        """Extract product data from JSON-LD <script> tags."""
-        import json
-
         items: list[GearItem] = []
         for script in soup.find_all("script", type="application/ld+json"):
             try:
@@ -93,9 +95,7 @@ class REIScraper(BaseScraper):
             except Exception:
                 continue
 
-            # Normalise to a flat list of dicts
             entries = data if isinstance(data, list) else [data]
-
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
@@ -106,15 +106,9 @@ class REIScraper(BaseScraper):
                 if not name:
                     continue
 
-                # Brand
                 brand_raw = entry.get("brand", {})
-                if isinstance(brand_raw, dict):
-                    brand = brand_raw.get("name", "Unknown")
-                else:
-                    brand = str(brand_raw) if brand_raw else "Unknown"
-                brand = brand.strip() or "Unknown"
+                brand = (brand_raw.get("name", "Unknown") if isinstance(brand_raw, dict) else str(brand_raw or "Unknown")).strip() or "Unknown"
 
-                # Price
                 price_usd: float | None = None
                 offers = entry.get("offers")
                 if isinstance(offers, dict):
@@ -128,7 +122,6 @@ class REIScraper(BaseScraper):
                     except (KeyError, TypeError, ValueError):
                         pass
 
-                # Weight — scan additionalProperty list
                 weight_g: float | None = None
                 for prop in entry.get("additionalProperty", []):
                     if not isinstance(prop, dict):
@@ -138,57 +131,40 @@ class REIScraper(BaseScraper):
                         if weight_g is not None:
                             break
 
-                description = entry.get("description", "")
-
-                # Source URL — prefer the product URL if present
                 item_url = entry.get("url") or source_url
-
                 item_id = GearItem.make_id(brand, name)
                 value_rating = GearItem.compute_value_rating(price_usd, weight_g or 1.0)
 
-                items.append(
-                    GearItem(
-                        id=item_id,
-                        name=name,
-                        brand=brand,
-                        category=category,
-                        weight_g=weight_g or 0.0,
-                        price_usd=price_usd,
-                        value_rating=value_rating,
-                        description=description,
-                        source_url=item_url,
-                    )
-                )
-
+                items.append(GearItem(
+                    id=item_id,
+                    name=name,
+                    brand=brand,
+                    category=category,
+                    weight_g=weight_g or 0.0,
+                    price_usd=price_usd,
+                    value_rating=value_rating,
+                    description=entry.get("description", ""),
+                    source_url=item_url,
+                ))
         return items
 
-    def _parse_listing(
-        self, html: str, category: str, source_url: str
-    ) -> list[GearItem]:
+    def _parse_listing(self, html: str, category: str, source_url: str) -> list[GearItem]:
         soup = BeautifulSoup(html, "html.parser")
-        items: list[GearItem] = []
 
-        # REI is a React SPA — JSON-LD is more reliable than HTML selectors
         items = self._extract_from_json_ld(soup, category, source_url)
         if items:
             zero_weight = sum(1 for i in items if i.weight_g == 0)
             if zero_weight:
-                logger.info(
-                    "REI %s: %d/%d items have zero weight (selectors may be stale)",
-                    source_url,
-                    zero_weight,
-                    len(items),
-                )
+                logger.info("REI %s: %d/%d items have zero weight", source_url, zero_weight, len(items))
             return items
 
-        # Fallback: card-scraping path
-        product_cards = soup.select("[data-ui='product-card']") or soup.select(
-            ".product-card"
+        # Fallback: card scraping
+        product_cards = (
+            soup.select("[data-ui='product-card']")
+            or soup.select(".VFTitledCard")
+            or soup.select("[class*='product-card']")
+            or soup.find_all("article")
         )
-        if not product_cards:
-            # Attempt to find any product-like article elements
-            product_cards = soup.find_all("article")
-
         for card in product_cards:
             item = self._parse_card(card, category, source_url)
             if item:
@@ -196,43 +172,26 @@ class REIScraper(BaseScraper):
 
         zero_weight = sum(1 for i in items if i.weight_g == 0)
         if zero_weight:
-            logger.info(
-                "REI %s: %d/%d items have zero weight (selectors may be stale)",
-                source_url,
-                zero_weight,
-                len(items),
-            )
+            logger.info("REI %s: %d/%d items have zero weight", source_url, zero_weight, len(items))
         return items
 
-    def _parse_card(
-        self, card: Any, category: str, source_url: str
-    ) -> GearItem | None:
+    def _parse_card(self, card: Any, category: str, source_url: str) -> GearItem | None:
         try:
-            name_el = card.select_one(
-                "[data-ui='product-title'], .product-title, h2, h3"
-            )
+            name_el = card.select_one("[data-ui='product-title'], .product-title, h2, h3")
             if not name_el:
                 return None
             name = name_el.get_text(strip=True)
             if not name:
                 return None
 
-            brand_el = card.select_one(
-                "[data-ui='product-brand'], .product-brand, [class*='brand']"
-            )
+            brand_el = card.select_one("[data-ui='product-brand'], .product-brand, [class*='brand']")
             brand = brand_el.get_text(strip=True) if brand_el else "Unknown"
 
-            price_el = card.select_one(
-                "[data-ui='price'], .price, [class*='price']"
-            )
-            price_text = price_el.get_text(strip=True) if price_el else ""
-            price_usd = parse_price_usd(price_text)
+            price_el = card.select_one("[data-ui='price'], .price, [class*='price']")
+            price_usd = parse_price_usd(price_el.get_text(strip=True)) if price_el else None
 
-            # Weight is in the specs table or subtitle
             weight_el = card.select_one("[data-ui='weight'], [class*='weight']")
-            weight_g = None
-            if weight_el:
-                weight_g = parse_weight_g(weight_el.get_text())
+            weight_g = parse_weight_g(weight_el.get_text()) if weight_el else None
 
             link_el = card.select_one("a[href]")
             link = ""
@@ -244,14 +203,9 @@ class REIScraper(BaseScraper):
             value_rating = GearItem.compute_value_rating(price_usd, weight_g or 1.0)
 
             return GearItem(
-                id=item_id,
-                name=name,
-                brand=brand,
-                category=category,
-                weight_g=weight_g or 0.0,
-                price_usd=price_usd,
-                value_rating=value_rating,
-                source_url=link or source_url,
+                id=item_id, name=name, brand=brand, category=category,
+                weight_g=weight_g or 0.0, price_usd=price_usd,
+                value_rating=value_rating, source_url=link or source_url,
             )
         except Exception as exc:
             logger.debug("Failed to parse REI card: %s", exc)
