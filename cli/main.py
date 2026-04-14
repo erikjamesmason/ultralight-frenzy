@@ -1,0 +1,491 @@
+"""Typer CLI for ultralight-frenzy."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from typing import Optional
+
+import typer
+from dotenv import load_dotenv
+from rich.console import Console
+from rich.table import Table
+
+load_dotenv()
+
+app = typer.Typer(
+    name="gear",
+    help="Ultralight Frenzy — agentic gear database CLI",
+    no_args_is_help=True,
+)
+console = Console()
+
+
+@app.command()
+def debug_lp(
+    list_id: str = typer.Argument(..., help="LighterPack list ID to inspect."),
+):
+    """Fetch a LighterPack page and print what the scraper sees — for debugging."""
+    import asyncio
+    import httpx
+    from bs4 import BeautifulSoup
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (compatible; UltralightFrenzy/1.0)"
+        )
+    }
+
+    async def fetch():
+        async with httpx.AsyncClient(headers=headers, timeout=15.0, follow_redirects=True) as client:
+            url = f"https://lighterpack.com/r/{list_id}"
+            console.print(f"Fetching [bold]{url}[/bold]…")
+            resp = await client.get(url)
+            console.print(f"Status: {resp.status_code}")
+            html = resp.text
+            soup = BeautifulSoup(html, "html.parser")
+
+            console.print(f"\n[bold]<script> tags found:[/bold] {len(soup.find_all('script'))}")
+            for i, script in enumerate(soup.find_all("script")):
+                text = (script.string or "")
+                src = script.get("src", "")
+                console.print(f"  [{i}] src={src!r} len={len(text)} "
+                              f"has_categories={'categories' in text} "
+                              f"has_items={'\"items\"' in text} "
+                              f"preview={text[:120]!r}")
+
+            console.print(f"\n[bold]Rows with 'item' in class:[/bold]")
+            for row in soup.find_all(class_=lambda c: c and "item" in c.lower())[:5]:
+                console.print(f"  {row.name} class={row.get('class')} text={row.get_text(strip=True)[:80]!r}")
+
+            console.print(f"\n[bold]Raw HTML of first lpItem:[/bold]")
+            first_item = soup.select_one("li.lpItem")
+            if first_item:
+                console.print(str(first_item))
+            else:
+                console.print("[red]No li.lpItem found[/red]")
+
+            console.print(f"\n[bold]All elements with [mg] attribute:[/bold]")
+            for el in soup.find_all(attrs={"mg": True})[:5]:
+                console.print(f"  {el.name} class={el.get('class')} mg={el.get('mg')} text={el.get_text(strip=True)[:40]!r}")
+
+    asyncio.run(fetch())
+
+
+@app.command()
+def debug_ogl(
+    url: str = typer.Argument(
+        default="https://www.outdoorgearlab.com/topics/camping-and-hiking/best-backpacking-tent",
+        help="OGL page URL to inspect.",
+    ),
+):
+    """Fetch an OutdoorGearLab page and print what the scraper sees — for debugging."""
+    import httpx
+    from bs4 import BeautifulSoup
+    from scrapers.base import BaseScraper
+
+    async def fetch():
+        async with httpx.AsyncClient(
+            headers=BaseScraper.HEADERS, timeout=20.0, follow_redirects=True
+        ) as client:
+            console.print(f"Fetching [bold]{url}[/bold]…")
+            resp = await client.get(url)
+            console.print(f"Status: {resp.status_code}")
+            if resp.status_code != 200:
+                console.print(f"[red]Response body:[/red] {resp.text[:500]}")
+                return
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            console.print(f"\n[bold]Page title:[/bold] {soup.title.string if soup.title else '(none)'}")
+
+            for label, selector in [
+                ("award-card", ".award-card"),
+                ("product-card", ".product-card"),
+                ("ProductCard*", "[class*='ProductCard']"),
+                ("award*", "[class*='award']"),
+                ("article", "article"),
+            ]:
+                els = soup.select(selector)
+                console.print(f"  {label}: {len(els)} elements")
+
+            console.print(f"\n[bold]First article HTML (first 800 chars):[/bold]")
+            art = soup.select_one("article")
+            console.print(str(art)[:800] if art else "[red]No article found[/red]")
+
+            console.print(f"\n[bold]All h2/h3 text on page (first 10):[/bold]")
+            for h in soup.select("h2, h3")[:10]:
+                console.print(f"  {h.name}: {h.get_text(strip=True)[:80]!r}")
+
+    asyncio.run(fetch())
+
+
+def _init_db():
+    from db.client import get_collection
+    return get_collection(
+        persist_path=os.environ.get("CHROMA_PERSIST_PATH", "./data/chroma"),
+        collection_name=os.environ.get("CHROMA_COLLECTION", "gear"),
+        embedding_model=os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# ingest
+# ---------------------------------------------------------------------------
+
+@app.command()
+def ingest(
+    sources: list[str] = typer.Option(
+        ["lighterpack", "outdoorgearlab", "shopify"],
+        "--sources",
+        "-s",
+        help="Scraper sources to run (lighterpack, outdoorgearlab, shopify, rei).",
+    ),
+    lp_ids: Optional[list[str]] = typer.Option(
+        None,
+        "--lp-ids",
+        help=(
+            "LighterPack list IDs to scrape. Find the ID in any public share URL: "
+            "https://lighterpack.com/r/<ID>. "
+            "Example: --lp-ids abc123 --lp-ids def456"
+        ),
+    ),
+):
+    """Scrape gear data and upsert into the vector database."""
+    from scrapers.lighterpack import LighterPackScraper
+    from scrapers.rei import REIScraper
+    from scrapers.outdoorgearlab import OutdoorGearLabScraper
+    from scrapers.shopify import ShopifyScraper
+    from db import operations as db
+
+    _init_db()
+
+    total = 0
+    for source in sources:
+        source = source.lower()
+        with console.status(f"Scraping [bold]{source}[/bold]…"):
+            if source == "lighterpack":
+                if not lp_ids:
+                    console.print(
+                        "[yellow]lighterpack:[/yellow] no list IDs provided — "
+                        "pass them with [bold]--lp-ids <ID>[/bold]\n"
+                        "  Find the ID in a share URL: lighterpack.com/r/[bold]<ID>[/bold]"
+                    )
+                    continue
+                items = asyncio.run(LighterPackScraper(list_ids=lp_ids).scrape())
+            elif source == "rei":
+                items = asyncio.run(REIScraper().scrape())
+            elif source == "outdoorgearlab":
+                items = asyncio.run(OutdoorGearLabScraper().scrape())
+            elif source == "shopify":
+                items = asyncio.run(ShopifyScraper().scrape())
+            else:
+                console.print(f"[red]Unknown source:[/red] {source}")
+                continue
+
+        valid = [i.to_dict() for i in items if i.weight_g > 0]
+        count = db.upsert_items(valid)
+        total += count
+        console.print(f"[green]✓[/green] {source}: {count} items upserted")
+
+    console.print(f"\n[bold]Upserted this run:[/bold] {total}  [bold]Total in DB:[/bold] {db.item_count()}")
+
+
+# ---------------------------------------------------------------------------
+# query
+# ---------------------------------------------------------------------------
+
+@app.command()
+def query(
+    message: str = typer.Argument(..., help="Natural language gear query."),
+):
+    """Ask the AI agent a free-form gear question (single turn)."""
+    from agent.agent import run_query_sync
+
+    _init_db()
+    with console.status("Thinking…"):
+        result = run_query_sync(message)
+    console.print(result)
+
+
+# ---------------------------------------------------------------------------
+# chat
+# ---------------------------------------------------------------------------
+
+@app.command()
+def chat():
+    """Interactive multi-turn chat with the gear agent. Type 'exit' to quit."""
+    from agent.agent import run_chat_turn
+
+    _init_db()
+    history: list[dict] = []
+    console.print("[bold cyan]Gear Chat[/bold cyan] — type [bold]exit[/bold] to quit\n")
+
+    while True:
+        try:
+            user_input = console.input("[bold green]You:[/bold green] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            break
+
+        with console.status("Thinking…"):
+            result, history = asyncio.run(run_chat_turn(user_input, history))
+
+        console.print(f"\n[bold blue]Gear:[/bold blue] {result}\n")
+
+
+# ---------------------------------------------------------------------------
+# search
+# ---------------------------------------------------------------------------
+
+@app.command()
+def search(
+    q: str = typer.Argument(..., help="Search query."),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Number of results."),
+    category: Optional[str] = typer.Option(None, "--category", "-c"),
+):
+    """Semantic similarity search (no LLM, raw vector results)."""
+    from db import operations as db
+
+    _init_db()
+    results = db.query_similar(q, top_k=top_k, category=category)
+    _print_gear_table(results)
+
+
+# ---------------------------------------------------------------------------
+# compare
+# ---------------------------------------------------------------------------
+
+@app.command()
+def compare(
+    item_ids: list[str] = typer.Argument(..., help="Two or more item IDs to compare."),
+):
+    """Compare gear items side by side."""
+    from db import operations as db
+
+    _init_db()
+    items = db.get_by_ids(item_ids)
+    if not items:
+        console.print("[red]No items found.[/red]")
+        raise typer.Exit(1)
+    _print_gear_table(items, show_reviews=True)
+
+
+# ---------------------------------------------------------------------------
+# kit
+# ---------------------------------------------------------------------------
+
+@app.command()
+def kit(
+    base_weight: Optional[float] = typer.Option(
+        None, "--base-weight", "-w", help="Target base weight in grams."
+    ),
+    budget: Optional[float] = typer.Option(
+        None, "--budget", "-b", help="Max budget in USD."
+    ),
+    style: Optional[str] = typer.Option(
+        None, "--style", help="Kit style: ultralight, budget, comfort."
+    ),
+):
+    """Build a complete ultralight kit within weight/budget constraints."""
+    from agent.tools import run_build_kit
+
+    _init_db()
+    with console.status("Building kit…"):
+        raw = run_build_kit(
+            target_base_weight_g=base_weight,
+            budget_usd=budget,
+            style=style,
+        )
+    data = json.loads(raw)
+
+    table = Table(title="Ultralight Kit", show_lines=True)
+    table.add_column("Category", style="bold cyan")
+    table.add_column("Item")
+    table.add_column("Brand")
+    table.add_column("Weight (g)", justify="right")
+    table.add_column("Price ($)", justify="right")
+
+    for cat, item in data.get("kit", {}).items():
+        table.add_row(
+            cat,
+            item.get("name", "-"),
+            item.get("brand", "-"),
+            str(item.get("weight_g", "-")),
+            str(item.get("price_usd", "-")),
+        )
+
+    console.print(table)
+    console.print(
+        f"\n[bold]Total weight:[/bold] {data['total_weight_g']}g "
+        f"({data['total_weight_lbs']} lbs)"
+    )
+    console.print(f"[bold]Total cost:[/bold] ${data['total_cost_usd']}")
+    missing = data.get("categories_missing", [])
+    if missing:
+        console.print(f"[yellow]No items found for:[/yellow] {', '.join(missing)}")
+
+
+# ---------------------------------------------------------------------------
+# filter
+# ---------------------------------------------------------------------------
+
+@app.command(name="filter")
+def filter_gear(
+    category: Optional[str] = typer.Option(None, "--category", "-c"),
+    max_weight: Optional[float] = typer.Option(
+        None, "--max-weight", "-w", help="Max weight in grams."
+    ),
+    max_price: Optional[float] = typer.Option(
+        None, "--max-price", "-p", help="Max price in USD."
+    ),
+    rank_by: str = typer.Option(
+        "weight_g", "--rank-by", help="Sort by: weight_g, price_usd, value_rating."
+    ),
+    limit: int = typer.Option(10, "--limit", "-n"),
+):
+    """Filter and rank gear by category, weight, or price."""
+    from db import operations as db
+
+    _init_db()
+    results = db.filter_and_rank(
+        category=category,
+        max_weight_g=max_weight,
+        max_price_usd=max_price,
+        rank_by=rank_by,
+        limit=limit,
+    )
+    _print_gear_table(results)
+
+
+# ---------------------------------------------------------------------------
+# list
+# ---------------------------------------------------------------------------
+
+@app.command(name="list")
+def list_gear(
+    category: Optional[str] = typer.Option(None, "--category", "-c"),
+    limit: int = typer.Option(20, "--limit", "-n"),
+):
+    """List all gear items in the database."""
+    from db import operations as db
+
+    _init_db()
+    items = db.list_items(category=category, limit=limit)
+    console.print(f"[bold]{db.item_count()}[/bold] total items in DB")
+    _print_gear_table(items)
+
+
+# ---------------------------------------------------------------------------
+# discover
+# ---------------------------------------------------------------------------
+
+@app.command()
+def discover(
+    time_filter: str = typer.Option(
+        "year",
+        "--time",
+        "-t",
+        help="Reddit time filter: hour, day, week, month, year, all.",
+    ),
+    auto_ingest: bool = typer.Option(
+        False,
+        "--ingest",
+        help="Immediately ingest the discovered LighterPack lists.",
+    ),
+):
+    """Find public LighterPack list IDs shared on Reddit (r/ultralight etc.)."""
+    from scrapers.reddit_lp import discover_ids_sync
+
+    with console.status("Searching Reddit for LighterPack lists…"):
+        ids = discover_ids_sync(time_filter=time_filter)
+
+    if not ids:
+        console.print("[yellow]No LighterPack list IDs found.[/yellow]")
+        return
+
+    console.print(f"\n[bold green]Found {len(ids)} list IDs:[/bold green]\n")
+    for lp_id in ids:
+        console.print(f"  https://lighterpack.com/r/[bold]{lp_id}[/bold]")
+
+    if not auto_ingest:
+        lp_flags = " ".join(f"--lp-ids {i}" for i in ids)
+        console.print(
+            f"\nTo ingest all of them:\n"
+            f"  [bold]uv run gear ingest --sources lighterpack {lp_flags}[/bold]\n"
+            f"\nOr inside Docker:\n"
+            f"  [bold]docker compose exec api gear ingest --sources lighterpack {lp_flags}[/bold]"
+        )
+
+    if auto_ingest:
+        from scrapers.lighterpack import LighterPackScraper
+        from db import operations as db
+
+        _init_db()
+        with console.status(f"Ingesting {len(ids)} LighterPack lists…"):
+            items = asyncio.run(LighterPackScraper(list_ids=ids).scrape())
+        valid = [i.to_dict() for i in items if i.weight_g > 0]
+        count = db.upsert_items(valid)
+        console.print(f"[green]✓[/green] Ingested {count} items from {len(ids)} lists.")
+
+
+# ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+):
+    """Start the FastAPI development server."""
+    import uvicorn
+    uvicorn.run("app.main:app", host=host, port=port, reload=reload)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _print_gear_table(
+    items: list[dict], show_reviews: bool = False
+) -> None:
+    if not items:
+        console.print("[yellow]No items found.[/yellow]")
+        return
+
+    table = Table(show_lines=False, highlight=True)
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name")
+    table.add_column("Brand")
+    table.add_column("Category")
+    table.add_column("Weight (g)", justify="right")
+    table.add_column("Price ($)", justify="right")
+    table.add_column("Val ($/g)", justify="right")
+    if show_reviews:
+        table.add_column("Notes")
+
+    for item in items:
+        row = [
+            item.get("id", "-"),
+            item.get("name", "-"),
+            item.get("brand", "-"),
+            item.get("category", "-"),
+            str(item.get("weight_g") or "-"),
+            str(item.get("price_usd") or "-"),
+            str(round(item["value_rating"], 3)) if item.get("value_rating") else "-",
+        ]
+        if show_reviews:
+            row.append((item.get("reviews") or "")[:60])
+        table.add_row(*row)
+
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()

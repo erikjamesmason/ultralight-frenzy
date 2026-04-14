@@ -1,0 +1,48 @@
+services:
+  # ── ChromaDB vector store ─────────────────────────────────────────────────
+  chroma:
+    image: chromadb/chroma:latest
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8001:8000"   # expose on host for direct inspection if needed
+    restart: unless-stopped
+    # Advisory limits — tune for your host
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  # ── Gear API + CLI ────────────────────────────────────────────────────────
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app              # live source mount — code changes apply on container restart
+      - gear_venv:/app/.venv  # named volume shadows host .venv; container keeps its own
+    environment:
+      # Tells db/client.py to use HttpClient instead of PersistentClient
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      UV_LINK_MODE: copy    # suppress hardlink warning when cache/venv are on different fs
+    env_file:
+      - .env          # ANTHROPIC_API_KEY and any overrides
+    depends_on:
+      - chroma
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    # Advisory limits — tune for your host
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+volumes:
+  chroma_data:
+  gear_venv:    # persists the container's .venv across restarts
